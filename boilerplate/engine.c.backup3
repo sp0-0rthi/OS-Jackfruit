@@ -316,39 +316,6 @@ int unregister_from_monitor(int monitor_fd, const char *container_id,
     return 0;
 }
 
-
-typedef struct {
-    int fd;
-    supervisor_ctx_t *ctx;
-    char container_id[32];
-} pipe_reader_arg_t;
-
-static void *pipe_reader_thread(void *arg)
-{
-    pipe_reader_arg_t *pa = (pipe_reader_arg_t *)arg;
-    char rbuf[512];
-    ssize_t n;
-    while ((n = read(pa->fd, rbuf, sizeof(rbuf))) > 0) {
-        log_item_t it;
-        memset(&it, 0, sizeof(it));
-        strncpy(it.container_id, pa->container_id, sizeof(it.container_id)-1);
-        if (n > (ssize_t)sizeof(it.data)) n = sizeof(it.data);
-        memcpy(it.data, rbuf, (size_t)n);
-        it.length = (size_t)n;
-        bounded_buffer_push(&pa->ctx->log_buffer, &it);
-    }
-    close(pa->fd);
-    free(pa);
-    return NULL;
-}
-
-static void sigchld_handler(int sig)
-{
-    (void)sig;
-    while (waitpid(-1, NULL, WNOHANG) > 0)
-        ;
-}
-
 static int run_supervisor(const char *rootfs)
 {
     supervisor_ctx_t ctx;
@@ -386,8 +353,6 @@ static int run_supervisor(const char *rootfs)
         perror("listen"); return 1;
     }
 
-    signal(SIGCHLD, sigchld_handler);
-    signal(SIGPIPE, SIG_IGN);
     pthread_create(&ctx.logger_thread, NULL, logging_thread, &ctx);
     fprintf(stderr, "Supervisor started for rootfs: %s\n", rootfs);
 
@@ -456,18 +421,10 @@ static int run_supervisor(const char *rootfs)
                 snprintf(resp.message, sizeof(resp.message),
                          "Started container %s pid=%d", req.container_id, pid);
 
-                if (req.kind == CMD_RUN) {
+                if (req.kind == CMD_RUN)
                     waitpid(pid, NULL, 0);
+                else
                     close(pipefd[0]);
-                } else {
-                    pipe_reader_arg_t *pa = malloc(sizeof(pipe_reader_arg_t));
-                    pa->fd = pipefd[0];
-                    pa->ctx = &ctx;
-                    strncpy(pa->container_id, req.container_id, sizeof(pa->container_id)-1);
-                    pthread_t rt;
-                    pthread_create(&rt, NULL, pipe_reader_thread, pa);
-                    pthread_detach(rt);
-                }
             }
 
         } else if (req.kind == CMD_PS) {
